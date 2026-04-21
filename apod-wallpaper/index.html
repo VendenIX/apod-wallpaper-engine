@@ -153,18 +153,52 @@
 
         let currentDate = null;
 
+        function getErrorMessage(status) {
+            switch (status) {
+                case 401:
+                case 403:
+                    return "Clé API invalide. Vérifiez votre clé dans les paramètres.";
+                case 429:
+                    return "Limite de requêtes atteinte. Utilisez votre propre clé NASA (pas DEMO_KEY).";
+                case 500:
+                case 502:
+                case 503:
+                case 504:
+                    return `Serveur NASA momentanément indisponible (${status}). Nouvelle tentative dans quelques minutes...`;
+                default:
+                    return `Erreur API NASA (${status}). Nouvelle tentative à la prochaine actualisation.`;
+            }
+        }
+
+        function scheduleRetry(delayMs) {
+            setTimeout(loadAPOD, delayMs);
+        }
+
         async function loadAPOD() {
             const bg = document.getElementById('background');
             const loading = document.getElementById('loading');
             const infoPanel = document.getElementById('info-panel');
             const errorEl = document.getElementById('error');
+            const hasImageLoaded = bg.classList.contains('loaded');
 
             try {
                 const url = `https://api.nasa.gov/planetary/apod?api_key=${config.apikey}&thumbs=true`;
                 const response = await fetch(url);
 
                 if (!response.ok) {
-                    throw new Error(`Erreur API: ${response.status}`);
+                    const message = getErrorMessage(response.status);
+                    // Auto-retry on transient server errors
+                    if ([500, 502, 503, 504, 429].includes(response.status)) {
+                        // If we already have an image displayed, stay silent and retry later
+                        if (!hasImageLoaded) {
+                            errorEl.textContent = message;
+                            errorEl.style.display = 'block';
+                            loading.style.display = 'none';
+                        }
+                        scheduleRetry(5 * 60 * 1000); // retry in 5 minutes
+                        return;
+                    }
+                    throw new Error(message);
                 }
 
                 const data = await response.json();
@@ -216,18 +250,26 @@
                 };
 
                 img.onerror = () => {
-                    loading.style.display = 'none';
-                    errorEl.textContent = "Impossible de charger l'image APOD.";
-                    errorEl.style.display = 'block';
+                    if (!hasImageLoaded) {
+                        loading.style.display = 'none';
+                        errorEl.textContent = "Impossible de charger l'image APOD.";
+                        errorEl.style.display = 'block';
+                    }
+                    scheduleRetry(5 * 60 * 1000);
                 };
 
                 img.src = imageUrl;
 
             } catch (err) {
                 console.error(err);
-                loading.style.display = 'none';
-                errorEl.textContent = `Erreur : ${err.message}. Vérifiez votre clé API.`;
-                errorEl.style.display = 'block';
+                // If an image is already displayed, stay silent — don't pollute the wallpaper
+                if (!hasImageLoaded) {
+                    loading.style.display = 'none';
+                    errorEl.textContent = err.message;
+                    errorEl.style.display = 'block';
+                }
+                // Retry network errors (fetch failed, offline, etc.)
+                scheduleRetry(5 * 60 * 1000);
             }
         }
 
