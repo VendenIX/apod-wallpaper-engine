@@ -1,0 +1,42 @@
+{
+    "title": "NASA APOD Daily",
+    "file": "index.html",
+    "preview": "preview.jpg",
+    "description": "Affiche automatiquement la photo astronomique du jour (APOD) de la NASA. Configurez votre clé API gratuite sur https://api.nasa.gov/",
+    "type": "Web",
+    "contentrating": "Everyone",
+    "tags": ["Space", "Nature", "Abstract"],
+    "visibility": "private",
+    "general": {
+        "properties": {
+            "apikey": {
+                "order": 0,
+                "text": "Clé API NASA",
+                "type": "textinput",
+                "value": "DEMO_KEY"
+            },
+            "showinfo": {
+                "order": 1,
+                "text": "Afficher le panneau d'info",
+                "type": "bool",
+                "value": true
+            },
+            "usehd": {
+                "order": 2,
+                "text": "Utiliser l'image HD (si dispo)",
+                "type": "bool",
+                "value": true
+            },
+            "language": {
+                "order": 3,
+                "text": "Langue de la date",
+                "type": "combo",
+                "value": "fr",
+                "options": [
+                    { "label": "Français", "value": "fr" },
+                    { "label": "English", "value": "en" }
+                ]
+            }
+        }
+    }
+}
