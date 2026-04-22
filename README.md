@@ -24,7 +24,9 @@ A lightweight web wallpaper for [Wallpaper Engine](https://store.steampowered.co
 - 🌍 **Multilingual dates** — French / English toggle
 - 🎬 **Video fallback** — on days when APOD is a video, the thumbnail is used automatically
 - ⚡ **Lightweight** — pure HTML/CSS/JS, no dependencies, ~10 KB
-- 🔧 **Fully customizable** — toggle the info panel, HD mode, and language directly from Wallpaper Engine settings
+- 🔧 **Fully customizable** — toggle the info panel, HD mode, and date language from Wallpaper Engine settings
+- 🎛️ **Movable & resizable info panel** — adjust X/Y offset and scale (×1 → ×1.75) from the Customize panel, or scroll the mouse wheel over the panel for live zoom
+- 💾 **Persistent cache** — the last successful APOD is cached locally, so a NASA API outage never leaves you with a black screen
 
 ---
 
@@ -64,10 +66,14 @@ That's it — you should now see today's APOD on your desktop. 🚀
 
 | Option | Description | Default |
 |---|---|---|
-| **NASA API Key** | Your personal key from [api.nasa.gov](https://api.nasa.gov/) | `DEMO_KEY` |
-| **Show Info Panel** | Toggle the title/description overlay | `true` |
-| **Use HD Image** | Uses `hdurl` from the API when available | `true` |
-| **Date Language** | Locale for the date format (`fr` / `en`) | `fr` |
+| **NASA API key** | Your personal key from [api.nasa.gov](https://api.nasa.gov/) — required | *(empty)* |
+| **Show info panel** | Toggle the title/description overlay | `true` |
+| **Use HD image** | Uses `hdurl` from the API when available | `true` |
+| **Date language** | Locale for the date format (`en` / `fr`) | `en` |
+| **Panel horizontal offset** | Shift the info panel left/right in pixels (`+` = right). Useful when a sidebar crops the default position. | `0` |
+| **Panel vertical offset** | Shift the info panel up/down in pixels (`+` = up). Raise the panel above the Windows taskbar. | `0` |
+| **Panel size** | Scale the info panel: `×1` / `×1.25` / `×1.5` / `×1.75`. You can also scroll the mouse wheel over the panel to cycle sizes live. | `×1` |
+| **Debug mode** | Shows a small overlay with API key, last call, cache state | `false` |
 
 ---
 
@@ -157,5 +163,7 @@ Code released under the [MIT License](./LICENSE). See the Copyright section abov
 *Not affiliated with NASA or Valve. APOD is a service of ASD at NASA/GSFC & Michigan Tech.*
 
 ⭐ **If you enjoy this wallpaper, consider starring the repo!**
+
+🤖 *Vibe-coded with [Claude Code](https://claude.com/claude-code)*
 
 </div>

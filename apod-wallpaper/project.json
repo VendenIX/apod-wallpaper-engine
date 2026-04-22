@@ -2,7 +2,7 @@
     "title": "NASA APOD Daily",
     "file": "index.html",
     "preview": "preview.jpg",
-    "description": "Affiche automatiquement la photo astronomique du jour (APOD) de la NASA. Configurez votre clé API gratuite sur https://api.nasa.gov/",
+    "description": "Automatically displays NASA's Astronomy Picture of the Day (APOD). A free API key is required: https://api.nasa.gov/",
     "type": "Web",
     "contentrating": "Everyone",
     "tags": ["Space", "Nature", "Abstract"],
@@ -11,31 +11,69 @@
         "properties": {
             "apikey": {
                 "order": 0,
-                "text": "Clé API NASA",
+                "text": "NASA API key (required)",
                 "type": "textinput",
-                "value": "DEMO_KEY"
+                "value": ""
             },
             "showinfo": {
                 "order": 1,
-                "text": "Afficher le panneau d'info",
+                "text": "Show info panel",
                 "type": "bool",
                 "value": true
             },
             "usehd": {
                 "order": 2,
-                "text": "Utiliser l'image HD (si dispo)",
+                "text": "Use HD image (when available)",
                 "type": "bool",
                 "value": true
             },
             "language": {
                 "order": 3,
-                "text": "Langue de la date",
+                "text": "Date language",
                 "type": "combo",
-                "value": "fr",
+                "value": "en",
                 "options": [
-                    { "label": "Français", "value": "fr" },
-                    { "label": "English", "value": "en" }
+                    { "label": "English", "value": "en" },
+                    { "label": "Français", "value": "fr" }
                 ]
+            },
+            "panelOffsetX": {
+                "order": 4,
+                "text": "Panel horizontal offset (px, + = right)",
+                "type": "slider",
+                "value": 0,
+                "min": -600,
+                "max": 600,
+                "step": 1,
+                "integer": true
+            },
+            "panelOffsetY": {
+                "order": 5,
+                "text": "Panel vertical offset (px, + = up)",
+                "type": "slider",
+                "value": 0,
+                "min": -600,
+                "max": 600,
+                "step": 1,
+                "integer": true
+            },
+            "panelScale": {
+                "order": 6,
+                "text": "Panel size (scroll wheel over panel to adjust)",
+                "type": "combo",
+                "value": "1",
+                "options": [
+                    { "label": "Normal (×1)", "value": "1" },
+                    { "label": "×1.25", "value": "1.25" },
+                    { "label": "×1.5", "value": "1.5" },
+                    { "label": "×1.75", "value": "1.75" }
+                ]
+            },
+            "debug": {
+                "order": 7,
+                "text": "Debug mode (info overlay)",
+                "type": "bool",
+                "value": false
             }
         }
     }

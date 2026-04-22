@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>NASA APOD Wallpaper</title>
@@ -34,6 +34,9 @@
         }
 
         #info-panel {
+            --px: 0px;
+            --py: 0px;
+            --ps: 1;
             position: fixed;
             bottom: 40px;
             left: 40px;
@@ -45,13 +48,14 @@
             border-radius: 16px;
             border: 1px solid rgba(255, 255, 255, 0.1);
             opacity: 0;
-            transform: translateY(20px);
+            transform: translate(var(--px), calc(var(--py) + 20px)) scale(var(--ps));
+            transform-origin: bottom left;
             transition: opacity 1s ease 1s, transform 1s ease 1s;
         }
 
         #info-panel.visible {
             opacity: 1;
-            transform: translateY(0);
+            transform: translate(var(--px), var(--py)) scale(var(--ps));
         }
 
         #info-panel.hidden {
@@ -129,11 +133,37 @@
             text-align: center;
             display: none;
         }
+
+        #scale-badge {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0.9);
+            padding: 14px 24px;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            color: rgba(255, 255, 255, 0.95);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+            z-index: 2000;
+        }
+
+        #scale-badge.visible {
+            opacity: 1;
+            transform: translate(-50%, -50%) scale(1);
+        }
     </style>
 </head>
 <body>
     <div id="background"></div>
-    <div id="loading">Chargement NASA APOD...</div>
+    <div id="loading">Loading NASA APOD...</div>
     <div id="info-panel" class="hidden">
         <div id="date"><span class="nasa-badge">NASA APOD</span><span id="date-text"></span></div>
         <div id="title"></div>
@@ -141,32 +171,127 @@
         <div id="copyright"></div>
     </div>
     <div id="error"></div>
+    <div id="scale-badge"></div>
+    <div id="debug-panel" style="
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 16px;
+        background: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(20px);
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.85);
+        line-height: 1.6;
+        display: none;
+        max-width: 340px;
+        z-index: 1000;
+    ">
+        <div style="font-weight: bold; margin-bottom: 6px; color: #4ade80;">🔧 DEBUG</div>
+        <div>API key: <span id="debug-key">—</span></div>
+        <div>Last call: <span id="debug-lastcall">—</span></div>
+        <div>Last status: <span id="debug-status">—</span></div>
+        <div>Cache: <span id="debug-cache">—</span></div>
+        <div>Reloads: <span id="debug-reloads">0</span></div>
+    </div>
 
     <script>
         // Configuration (modifiable via Wallpaper Engine settings)
         const config = {
-            apikey: 'DEMO_KEY',
+            apikey: '',   // empty by default — user MUST provide one
             showinfo: true,
             usehd: true,
-            language: 'fr'
+            language: 'fr',
+            panelOffsetX: 0,
+            panelOffsetY: 0,
+            panelScale: 1,
+            debug: false
         };
 
+        const PANEL_SCALES = [1, 1.25, 1.5, 1.75];
+
         let currentDate = null;
+        let reloadCount = 0;
+        let scaleBadgeTimeout = null;
+
+        function applyPanelTransform() {
+            const panel = document.getElementById('info-panel');
+            panel.style.setProperty('--px', `${config.panelOffsetX}px`);
+            // CSS Y axis is inverted vs. user intuition (+ = down), so we negate
+            // to make the slider's "positive = up" labeling hold.
+            panel.style.setProperty('--py', `${-config.panelOffsetY}px`);
+            panel.style.setProperty('--ps', config.panelScale);
+        }
+
+        function showScaleBadge(scale) {
+            const badge = document.getElementById('scale-badge');
+            badge.textContent = `×${scale}`;
+            badge.classList.add('visible');
+            clearTimeout(scaleBadgeTimeout);
+            scaleBadgeTimeout = setTimeout(() => badge.classList.remove('visible'), 700);
+        }
+
+        function setupWheelZoom() {
+            const panel = document.getElementById('info-panel');
+            panel.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                let idx = PANEL_SCALES.indexOf(config.panelScale);
+                if (idx === -1) idx = 0;
+                if (e.deltaY < 0) idx = Math.min(idx + 1, PANEL_SCALES.length - 1);
+                else idx = Math.max(idx - 1, 0);
+                if (PANEL_SCALES[idx] === config.panelScale) return;
+                config.panelScale = PANEL_SCALES[idx];
+                applyPanelTransform();
+                showScaleBadge(config.panelScale);
+            }, { passive: false });
+        }
+
+        function maskKey(key) {
+            if (!key) return '(empty)';
+            if (key.length < 8) return key;
+            return key.substring(0, 4) + '•••••••' + key.substring(key.length - 4);
+        }
+
+        function updateDebugPanel(status) {
+            const panel = document.getElementById('debug-panel');
+            panel.style.display = config.debug ? 'block' : 'none';
+            if (!config.debug) return;
+            document.getElementById('debug-key').textContent = maskKey(config.apikey);
+            document.getElementById('debug-lastcall').textContent = new Date().toLocaleTimeString();
+            if (status) document.getElementById('debug-status').textContent = status;
+            document.getElementById('debug-reloads').textContent = reloadCount;
+
+            // Show cache info
+            try {
+                const raw = localStorage.getItem('apod_cache_v1');
+                if (raw) {
+                    const c = JSON.parse(raw);
+                    const sizeKB = Math.round(raw.length / 1024);
+                    document.getElementById('debug-cache').textContent = `${c.date} (${sizeKB} KB)`;
+                } else {
+                    document.getElementById('debug-cache').textContent = 'empty';
+                }
+            } catch {
+                document.getElementById('debug-cache').textContent = 'error';
+            }
+        }
 
         function getErrorMessage(status) {
             switch (status) {
                 case 401:
                 case 403:
-                    return "Clé API invalide. Vérifiez votre clé dans les paramètres.";
+                    return "Invalid API key. Check your key in the wallpaper settings.";
                 case 429:
-                    return "Limite de requêtes atteinte. Utilisez votre propre clé NASA (pas DEMO_KEY).";
+                    return "Rate limit reached. Use your own NASA API key (not DEMO_KEY).";
                 case 500:
                 case 502:
                 case 503:
                 case 504:
-                    return `Serveur NASA momentanément indisponible (${status}). Nouvelle tentative dans quelques minutes...`;
+                    return `NASA server temporarily unavailable (${status}). Retrying in a few minutes...`;
                 default:
-                    return `Erreur API NASA (${status}). Nouvelle tentative à la prochaine actualisation.`;
+                    return `NASA API error (${status}). Will retry on next refresh.`;
             }
         }
 
@@ -177,25 +302,48 @@
         async function loadAPOD() {
             const bg = document.getElementById('background');
             const loading = document.getElementById('loading');
-            const infoPanel = document.getElementById('info-panel');
             const errorEl = document.getElementById('error');
             const hasImageLoaded = bg.classList.contains('loaded');
 
+            console.log('[APOD] loadAPOD() called with key:', maskKey(config.apikey));
+
+            // No API key: show instructions ONLY if nothing else is displayed
+            if (!config.apikey || config.apikey.trim() === '') {
+                console.warn('[APOD] No API key configured — aborting request.');
+                if (!hasImageLoaded) {
+                    loading.style.display = 'none';
+                    errorEl.innerHTML = `
+                        <div style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">🔑 NASA API key required</div>
+                        <div style="font-size: 13px; line-height: 1.5; opacity: 0.85;">
+                            This wallpaper needs a personal NASA API key (free).<br><br>
+                            1. Get your key at <b>api.nasa.gov</b><br>
+                            2. Paste it into the wallpaper settings<br>
+                            (Customize → NASA API key)
+                        </div>`;
+                    errorEl.style.display = 'block';
+                }
+                updateDebugPanel('no_key');
+                return;
+            }
+
             try {
                 const url = `https://api.nasa.gov/planetary/apod?api_key=${config.apikey}&thumbs=true`;
+                console.log('[APOD] Fetching:', url.replace(config.apikey, maskKey(config.apikey)));
                 const response = await fetch(url);
+                console.log('[APOD] Response status:', response.status);
+                updateDebugPanel(response.status);
 
                 if (!response.ok) {
                     const message = getErrorMessage(response.status);
-                    // Auto-retry on transient server errors
+                    // Auto-retry on transient server errors — KEEP current image displayed
                     if ([500, 502, 503, 504, 429].includes(response.status)) {
-                        // If we already have an image displayed, stay silent and retry later
+                        console.log('[APOD] Transient error, keeping current image and retrying in 5min.');
                         if (!hasImageLoaded) {
                             errorEl.textContent = message;
                             errorEl.style.display = 'block';
                             loading.style.display = 'none';
                         }
-                        scheduleRetry(5 * 60 * 1000); // retry in 5 minutes
+                        scheduleRetry(5 * 60 * 1000);
                         return;
                     }
                     throw new Error(message);
@@ -204,55 +352,39 @@
                 const data = await response.json();
 
                 // Skip if same day already loaded
-                if (currentDate === data.date && bg.classList.contains('loaded')) {
+                if (currentDate === data.date && hasImageLoaded) {
+                    console.log('[APOD] Already displaying', data.date, '— skipping.');
                     return;
                 }
-                currentDate = data.date;
 
                 let imageUrl = null;
-
                 if (data.media_type === 'image') {
                     imageUrl = (config.usehd && data.hdurl) ? data.hdurl : data.url;
                 } else if (data.media_type === 'video' && data.thumbnail_url) {
                     imageUrl = data.thumbnail_url;
                 } else {
-                    throw new Error("L'APOD du jour est une vidéo sans miniature.");
+                    throw new Error("Today's APOD is a video with no thumbnail.");
                 }
 
-                // Preload image
+                // Preload image before switching — we don't blank the screen
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
 
-                img.onload = () => {
-                    bg.style.backgroundImage = `url('${imageUrl}')`;
-                    bg.classList.add('loaded');
-                    loading.style.display = 'none';
-                    errorEl.style.display = 'none';
-
-                    document.getElementById('title').textContent = data.title || '';
-                    document.getElementById('date-text').textContent = formatDate(data.date);
-                    document.getElementById('explanation').textContent = data.explanation || '';
-
-                    const copyrightEl = document.getElementById('copyright');
-                    if (data.copyright) {
-                        copyrightEl.textContent = `© ${data.copyright.trim()}`;
-                        copyrightEl.style.display = 'block';
-                    } else {
-                        copyrightEl.style.display = 'none';
-                    }
-
-                    if (config.showinfo) {
-                        infoPanel.classList.remove('hidden');
-                        requestAnimationFrame(() => {
-                            setTimeout(() => infoPanel.classList.add('visible'), 50);
-                        });
-                    }
+                img.onload = async () => {
+                    console.log('[APOD] New image loaded, applying:', data.title);
+                    displayAPOD(data, imageUrl);
+                    currentDate = data.date;
+                    // Save to cache in background (non-blocking)
+                    saveToCache(data, imageUrl).catch(err =>
+                        console.warn('[APOD] Cache save failed:', err.message)
+                    );
                 };
 
                 img.onerror = () => {
+                    console.warn('[APOD] Image failed to load, keeping current display.');
                     if (!hasImageLoaded) {
                         loading.style.display = 'none';
-                        errorEl.textContent = "Impossible de charger l'image APOD.";
+                        errorEl.textContent = "Failed to load the APOD image.";
                         errorEl.style.display = 'block';
                     }
                     scheduleRetry(5 * 60 * 1000);
@@ -261,15 +393,114 @@
                 img.src = imageUrl;
 
             } catch (err) {
-                console.error(err);
-                // If an image is already displayed, stay silent — don't pollute the wallpaper
+                console.error('[APOD]', err);
+                // If something is already displayed (from cache or previous load), stay silent
                 if (!hasImageLoaded) {
                     loading.style.display = 'none';
                     errorEl.textContent = err.message;
                     errorEl.style.display = 'block';
                 }
-                // Retry network errors (fetch failed, offline, etc.)
                 scheduleRetry(5 * 60 * 1000);
+            }
+        }
+
+        // Display APOD data + image (used by both fresh fetch and cache restore)
+        function displayAPOD(data, imageUrl) {
+            const bg = document.getElementById('background');
+            const loading = document.getElementById('loading');
+            const errorEl = document.getElementById('error');
+            const infoPanel = document.getElementById('info-panel');
+
+            bg.style.backgroundImage = `url('${imageUrl}')`;
+            bg.classList.add('loaded');
+            loading.style.display = 'none';
+            errorEl.style.display = 'none';
+
+            document.getElementById('title').textContent = data.title || '';
+            document.getElementById('date-text').textContent = formatDate(data.date);
+            document.getElementById('explanation').textContent = data.explanation || '';
+
+            const copyrightEl = document.getElementById('copyright');
+            if (data.copyright) {
+                copyrightEl.textContent = `© ${data.copyright.trim()}`;
+                copyrightEl.style.display = 'block';
+            } else {
+                copyrightEl.style.display = 'none';
+            }
+
+            if (config.showinfo) {
+                infoPanel.classList.remove('hidden');
+                requestAnimationFrame(() => {
+                    setTimeout(() => infoPanel.classList.add('visible'), 50);
+                });
+            }
+        }
+
+        // --- Cache system using localStorage ---
+        // Stores last successful APOD as base64 so we can redisplay it even offline
+        const CACHE_KEY = 'apod_cache_v1';
+
+        async function saveToCache(data, imageUrl) {
+            try {
+                // Fetch image and convert to base64 data URL
+                const response = await fetch(imageUrl);
+                const blob = await response.blob();
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+
+                const cache = {
+                    date: data.date,
+                    title: data.title,
+                    explanation: data.explanation,
+                    copyright: data.copyright || null,
+                    media_type: data.media_type,
+                    imageDataUrl: dataUrl,
+                    cachedAt: Date.now()
+                };
+                localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+                console.log('[APOD] Cache saved (', Math.round(dataUrl.length / 1024), 'KB)');
+            } catch (err) {
+                // localStorage quota exceeded (image too big): save metadata only
+                console.warn('[APOD] Full cache failed, saving metadata only:', err.message);
+                try {
+                    const cache = {
+                        date: data.date,
+                        title: data.title,
+                        explanation: data.explanation,
+                        copyright: data.copyright || null,
+                        media_type: data.media_type,
+                        imageUrl: imageUrl, // fallback: remote URL
+                        cachedAt: Date.now()
+                    };
+                    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+                } catch (e) {
+                    console.error('[APOD] Could not save any cache:', e.message);
+                }
+            }
+        }
+
+        function loadFromCache() {
+            try {
+                const raw = localStorage.getItem(CACHE_KEY);
+                if (!raw) {
+                    console.log('[APOD] No cache found.');
+                    return false;
+                }
+                const cache = JSON.parse(raw);
+                const image = cache.imageDataUrl || cache.imageUrl;
+                if (!image) return false;
+
+                console.log('[APOD] Restoring from cache, date:', cache.date);
+                displayAPOD(cache, image);
+                currentDate = cache.date;
+                return true;
+            } catch (err) {
+                console.warn('[APOD] Could not load cache:', err.message);
+                return false;
             }
         }
 
@@ -296,10 +527,12 @@
         // Wallpaper Engine property listener
         window.wallpaperPropertyListener = {
             applyUserProperties: function(properties) {
+                console.log('[APOD] applyUserProperties called with:', properties);
                 let reloadNeeded = false;
 
                 if (properties.apikey) {
-                    const newKey = properties.apikey.value || 'DEMO_KEY';
+                    const newKey = (properties.apikey.value || '').trim();
+                    console.log('[APOD] API key update received. Old:', maskKey(config.apikey), '→ New:', maskKey(newKey));
                     if (newKey !== config.apikey) {
                         config.apikey = newKey;
                         reloadNeeded = true;
@@ -321,17 +554,44 @@
                         document.getElementById('date-text').textContent = formatDate(currentDate);
                     }
                 }
+                if (properties.panelOffsetX !== undefined) {
+                    config.panelOffsetX = Number(properties.panelOffsetX.value) || 0;
+                    applyPanelTransform();
+                }
+                if (properties.panelOffsetY !== undefined) {
+                    config.panelOffsetY = Number(properties.panelOffsetY.value) || 0;
+                    applyPanelTransform();
+                }
+                if (properties.panelScale !== undefined) {
+                    const parsed = parseFloat(properties.panelScale.value);
+                    config.panelScale = PANEL_SCALES.includes(parsed) ? parsed : 1;
+                    applyPanelTransform();
+                }
+                if (properties.debug !== undefined) {
+                    config.debug = properties.debug.value;
+                    updateDebugPanel();
+                }
 
                 if (reloadNeeded) {
+                    reloadCount++;
+                    console.log('[APOD] Config changed, re-fetching silently. Total reloads:', reloadCount);
+                    // DO NOT clear the current image. Just re-fetch — if successful, the new
+                    // image will replace the old one. If it fails, the old image stays.
                     currentDate = null;
-                    document.getElementById('background').classList.remove('loaded');
-                    document.getElementById('loading').style.display = 'block';
+                    document.getElementById('error').style.display = 'none';
                     loadAPOD();
                 }
             }
         };
 
-        // Initial load
+        // Initial load: try cache first (instant display), then fetch fresh APOD
+        console.log('[APOD] Wallpaper initialized. Initial config:', { ...config, apikey: maskKey(config.apikey) });
+        applyPanelTransform();
+        setupWheelZoom();
+        const hasCachedImage = loadFromCache();
+        if (hasCachedImage) {
+            console.log('[APOD] Cache restored — fetching latest in background.');
+        }
         loadAPOD();
 
         // Check for a new APOD every hour
