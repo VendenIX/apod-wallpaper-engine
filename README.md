@@ -42,7 +42,7 @@ Head over to [api.nasa.gov](https://api.nasa.gov/) and fill out the "Generate AP
 
 ### 2. Install the wallpaper
 
-1. Download the latest release [here](https://github.com/YOUR_USERNAME/apod-wallpaper-engine/releases) (or clone this repo)
+1. Download the latest release [here](https://github.com/VendenIX/apod-wallpaper-engine/releases/) (or clone this repo)
 2. In Steam, right-click **Wallpaper Engine** → **Manage** → **Browse local files**
 3. Navigate to `projects/myprojects/` *(create the `myprojects` folder if it doesn't exist)*
 4. Copy the entire `apod-wallpaper` folder into it
