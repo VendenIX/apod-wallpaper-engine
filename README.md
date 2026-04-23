@@ -1,5 +1,7 @@
 <div align="center">
 
+I am currently experimenting with Claude Code for this project for exploratory purposes. No code has been developed yet, as I am simply investigating its capabilities; consequently, the resulting implementation may not be highly optimized at this stage.
+
 # 🌌 APOD Wallpaper Engine
 
 **NASA's Astronomy Picture of the Day — live on your desktop, every day.**
