@@ -193,6 +193,7 @@
         <div>API key: <span id="debug-key">—</span></div>
         <div>Last call: <span id="debug-lastcall">—</span></div>
         <div>Last status: <span id="debug-status">—</span></div>
+        <div>Last APOD: <span id="debug-apod">—</span></div>
         <div>Cache: <span id="debug-cache">—</span></div>
         <div>Reloads: <span id="debug-reloads">0</span></div>
     </div>
@@ -200,7 +201,7 @@
     <script>
         // Configuration (modifiable via Wallpaper Engine settings)
         const config = {
-            apikey: '',   // empty by default — user MUST provide one
+            apikey: '',   // optional — falls back to DEMO_KEY (shared, rate-limited)
             showinfo: true,
             usehd: true,
             language: 'fr',
@@ -210,11 +211,25 @@
             debug: false
         };
 
+        // New official endpoint (the legacy api.nasa.gov/planetary/apod is shut down on 2026-12-01)
+        const APOD_ENDPOINT = 'https://science.nasa.gov/wp-json/wp/v2/apod-basic/';
+        const CACHE_KEY = 'apod_cache_v2';          // v2: drops caches poisoned by the broken legacy API
+        const LEGACY_CACHE_KEYS = ['apod_cache_v1'];
+        const RETRY_DELAY_MS = 5 * 60 * 1000;
+        const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
         const PANEL_SCALES = [1, 1.25, 1.5, 1.75];
 
         let currentDate = null;
         let reloadCount = 0;
         let scaleBadgeTimeout = null;
+        let retryTimeout = null;
+
+        // State shown in the debug overlay (kept even while the overlay is off)
+        const debugState = {
+            lastCall: null,
+            lastStatus: null,
+            lastApod: null
+        };
 
         function applyPanelTransform() {
             const panel = document.getElementById('info-panel');
@@ -249,23 +264,34 @@
         }
 
         function maskKey(key) {
-            if (!key) return '(empty)';
+            if (!key) return '(empty → DEMO_KEY)';
             if (key.length < 8) return key;
             return key.substring(0, 4) + '•••••••' + key.substring(key.length - 4);
         }
 
-        function updateDebugPanel(status) {
+        function effectiveKey() {
+            const key = (config.apikey || '').trim();
+            return key || 'DEMO_KEY';
+        }
+
+        function setDebug(patch) {
+            Object.assign(debugState, patch);
+            renderDebugPanel();
+        }
+
+        function renderDebugPanel() {
             const panel = document.getElementById('debug-panel');
             panel.style.display = config.debug ? 'block' : 'none';
             if (!config.debug) return;
             document.getElementById('debug-key').textContent = maskKey(config.apikey);
-            document.getElementById('debug-lastcall').textContent = new Date().toLocaleTimeString();
-            if (status) document.getElementById('debug-status').textContent = status;
+            document.getElementById('debug-lastcall').textContent =
+                debugState.lastCall ? debugState.lastCall.toLocaleTimeString() : '—';
+            document.getElementById('debug-status').textContent = debugState.lastStatus ?? '—';
+            document.getElementById('debug-apod').textContent = debugState.lastApod ?? '—';
             document.getElementById('debug-reloads').textContent = reloadCount;
 
-            // Show cache info
             try {
-                const raw = localStorage.getItem('apod_cache_v1');
+                const raw = localStorage.getItem(CACHE_KEY);
                 if (raw) {
                     const c = JSON.parse(raw);
                     const sizeKB = Math.round(raw.length / 1024);
@@ -296,125 +322,157 @@
         }
 
         function scheduleRetry(delayMs) {
-            setTimeout(loadAPOD, delayMs);
+            clearTimeout(retryTimeout);
+            retryTimeout = setTimeout(loadAPOD, delayMs);
+        }
+
+        // --- Text helpers: the new API returns HTML in explanation / credit ---
+        function htmlToText(html) {
+            if (!html) return '';
+            const doc = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html');
+            return (doc.body.textContent || '').replace(/\s+/g, ' ').trim();
+        }
+
+        function cleanExplanation(html) {
+            if (!html) return '';
+            // Drop the editorial footer ("APOD's email…", "Tomorrow's picture…") after the first double <br>
+            const main = html.split(/<br\s*\/?>\s*<br\s*\/?>/i)[0];
+            return htmlToText(main).replace(/^Explanation:\s*/i, '');
+        }
+
+        // Pick the image URL to display. hdurl is a resizable "dynamicimage" URL:
+        // keep it as-is for HD, or ask the CDN for a 1920px-wide version otherwise.
+        function pickImageUrl(hdurl) {
+            if (!hdurl) return null;
+            if (config.usehd) return hdurl;
+            try {
+                const u = new URL(hdurl);
+                if (u.pathname.includes('/dynamicimage/')) {
+                    u.search = '?w=1920&fit=clip';
+                    return u.toString();
+                }
+            } catch { /* fall through */ }
+            return hdurl;
+        }
+
+        // Convert one API entry into the shape the wallpaper uses, or explain why it's unusable
+        function normalizeEntry(raw) {
+            const entry = Array.isArray(raw) ? raw[0] : raw;
+            if (!entry || typeof entry !== 'object') {
+                return { error: 'Empty or unexpected API response.' };
+            }
+            if (entry.code && entry.message) {
+                return { error: `NASA API error: ${entry.message}` };
+            }
+            const title = htmlToText(entry.title);
+            const hdurl = entry.hdurl || '';
+            if (!entry.date || !title) {
+                return { error: 'API response is missing date or title.' };
+            }
+            // Guard against placeholder data like the broken legacy API (NASA logo / "NASA Science")
+            if (/nasa-logo/i.test(hdurl) || title === 'NASA Science') {
+                return { error: 'API returned placeholder data (NASA logo), ignoring it.' };
+            }
+            // Videos (YouTube/Vimeo…) can't be a wallpaper, and the new API no longer offers thumbnails
+            const mediaType = (entry.media_type || 'image').toLowerCase();
+            if (mediaType !== 'image' || !hdurl) {
+                return { error: `APOD ${entry.date} is a ${mediaType} with no usable image — keeping the current one.` };
+            }
+            const credit = htmlToText(entry.copyright || entry.credit || '');
+            return {
+                data: {
+                    date: entry.date,
+                    title,
+                    explanation: cleanExplanation(entry.explanation),
+                    copyright: credit || null,
+                    media_type: entry.media_type || 'image',
+                    permalink: entry.permalink || entry.url || null
+                },
+                imageUrl: pickImageUrl(hdurl)
+            };
+        }
+
+        function showErrorIfNothingDisplayed(message) {
+            const bg = document.getElementById('background');
+            if (bg.classList.contains('loaded')) return; // keep the current image, stay silent
+            document.getElementById('loading').style.display = 'none';
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
         }
 
         async function loadAPOD() {
-            const bg = document.getElementById('background');
-            const loading = document.getElementById('loading');
-            const errorEl = document.getElementById('error');
-            const hasImageLoaded = bg.classList.contains('loaded');
-
-            console.log('[APOD] loadAPOD() called with key:', maskKey(config.apikey));
-
-            // No API key: show instructions ONLY if nothing else is displayed
-            if (!config.apikey || config.apikey.trim() === '') {
-                console.warn('[APOD] No API key configured — aborting request.');
-                if (!hasImageLoaded) {
-                    loading.style.display = 'none';
-                    errorEl.innerHTML = `
-                        <div style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">🔑 NASA API key required</div>
-                        <div style="font-size: 13px; line-height: 1.5; opacity: 0.85;">
-                            This wallpaper needs a personal NASA API key (free).<br><br>
-                            1. Get your key at <b>api.nasa.gov</b><br>
-                            2. Paste it into the wallpaper settings<br>
-                            (Customize → NASA API key)
-                        </div>`;
-                    errorEl.style.display = 'block';
-                }
-                updateDebugPanel('no_key');
-                return;
-            }
+            const hasImageLoaded = document.getElementById('background').classList.contains('loaded');
+            const url = `${APOD_ENDPOINT}?api_key=${encodeURIComponent(effectiveKey())}`;
+            console.log('[APOD] Fetching:', url.replace(effectiveKey(), maskKey(config.apikey)));
+            setDebug({ lastCall: new Date(), lastStatus: 'pending…' });
 
             try {
-                const url = `https://api.nasa.gov/planetary/apod?api_key=${config.apikey}&thumbs=true`;
-                console.log('[APOD] Fetching:', url.replace(config.apikey, maskKey(config.apikey)));
-                const response = await fetch(url);
+                const response = await fetch(url, { cache: 'no-store' });
                 console.log('[APOD] Response status:', response.status);
-                updateDebugPanel(response.status);
+                setDebug({ lastStatus: response.status });
 
                 if (!response.ok) {
                     const message = getErrorMessage(response.status);
-                    // Auto-retry on transient server errors — KEEP current image displayed
                     if ([500, 502, 503, 504, 429].includes(response.status)) {
                         console.log('[APOD] Transient error, keeping current image and retrying in 5min.');
-                        if (!hasImageLoaded) {
-                            errorEl.textContent = message;
-                            errorEl.style.display = 'block';
-                            loading.style.display = 'none';
-                        }
-                        scheduleRetry(5 * 60 * 1000);
+                        showErrorIfNothingDisplayed(message);
+                        scheduleRetry(RETRY_DELAY_MS);
                         return;
                     }
                     throw new Error(message);
                 }
 
-                const data = await response.json();
+                const { data, imageUrl, error } = normalizeEntry(await response.json());
+                if (error) {
+                    console.warn('[APOD]', error);
+                    setDebug({ lastStatus: `${response.status} (rejected)` });
+                    showErrorIfNothingDisplayed(error);
+                    return; // next hourly check will try again
+                }
+                setDebug({ lastApod: `${data.date} — ${data.title}` });
 
-                // Skip if same day already loaded
                 if (currentDate === data.date && hasImageLoaded) {
                     console.log('[APOD] Already displaying', data.date, '— skipping.');
                     return;
                 }
 
-                let imageUrl = null;
-                if (data.media_type === 'image') {
-                    imageUrl = (config.usehd && data.hdurl) ? data.hdurl : data.url;
-                } else if (data.media_type === 'video' && data.thumbnail_url) {
-                    imageUrl = data.thumbnail_url;
-                } else {
-                    throw new Error("Today's APOD is a video with no thumbnail.");
-                }
-
-                // Preload image before switching — we don't blank the screen
+                // Preload before switching so the screen never goes blank.
+                // No crossOrigin attribute: displaying the image doesn't need CORS.
                 const img = new Image();
-                img.crossOrigin = 'anonymous';
-
-                img.onload = async () => {
+                img.onload = () => {
                     console.log('[APOD] New image loaded, applying:', data.title);
                     displayAPOD(data, imageUrl);
                     currentDate = data.date;
-                    // Save to cache in background (non-blocking)
                     saveToCache(data, imageUrl).catch(err =>
                         console.warn('[APOD] Cache save failed:', err.message)
                     );
                 };
-
                 img.onerror = () => {
-                    console.warn('[APOD] Image failed to load, keeping current display.');
-                    if (!hasImageLoaded) {
-                        loading.style.display = 'none';
-                        errorEl.textContent = "Failed to load the APOD image.";
-                        errorEl.style.display = 'block';
-                    }
-                    scheduleRetry(5 * 60 * 1000);
+                    console.warn('[APOD] Image failed to load, keeping current display:', imageUrl);
+                    showErrorIfNothingDisplayed('Failed to load the APOD image.');
+                    scheduleRetry(RETRY_DELAY_MS);
                 };
-
                 img.src = imageUrl;
 
             } catch (err) {
+                // A TypeError here usually means a network/CORS failure (no HTTP status available)
                 console.error('[APOD]', err);
-                // If something is already displayed (from cache or previous load), stay silent
-                if (!hasImageLoaded) {
-                    loading.style.display = 'none';
-                    errorEl.textContent = err.message;
-                    errorEl.style.display = 'block';
-                }
-                scheduleRetry(5 * 60 * 1000);
+                setDebug({ lastStatus: err instanceof TypeError ? 'network/CORS error' : 'error' });
+                showErrorIfNothingDisplayed(err.message);
+                scheduleRetry(RETRY_DELAY_MS);
             }
         }
 
         // Display APOD data + image (used by both fresh fetch and cache restore)
         function displayAPOD(data, imageUrl) {
             const bg = document.getElementById('background');
-            const loading = document.getElementById('loading');
-            const errorEl = document.getElementById('error');
             const infoPanel = document.getElementById('info-panel');
 
-            bg.style.backgroundImage = `url('${imageUrl}')`;
+            bg.style.backgroundImage = `url("${imageUrl.replace(/"/g, '%22')}")`;
             bg.classList.add('loaded');
-            loading.style.display = 'none';
-            errorEl.style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('error').style.display = 'none';
 
             document.getElementById('title').textContent = data.title || '';
             document.getElementById('date-text').textContent = formatDate(data.date);
@@ -437,12 +495,11 @@
         }
 
         // --- Cache system using localStorage ---
-        // Stores last successful APOD as base64 so we can redisplay it even offline
-        const CACHE_KEY = 'apod_cache_v1';
-
+        // Tries to store the image itself (base64) so it survives offline; if the CDN
+        // refuses cross-origin reads or the image is too big, stores metadata + URL only.
         async function saveToCache(data, imageUrl) {
+            const base = { ...data, cachedAt: Date.now() };
             try {
-                // Fetch image and convert to base64 data URL
                 const response = await fetch(imageUrl);
                 const blob = await response.blob();
                 const dataUrl = await new Promise((resolve, reject) => {
@@ -451,40 +508,22 @@
                     reader.onerror = reject;
                     reader.readAsDataURL(blob);
                 });
-
-                const cache = {
-                    date: data.date,
-                    title: data.title,
-                    explanation: data.explanation,
-                    copyright: data.copyright || null,
-                    media_type: data.media_type,
-                    imageDataUrl: dataUrl,
-                    cachedAt: Date.now()
-                };
-                localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+                localStorage.setItem(CACHE_KEY, JSON.stringify({ ...base, imageDataUrl: dataUrl }));
                 console.log('[APOD] Cache saved (', Math.round(dataUrl.length / 1024), 'KB)');
             } catch (err) {
-                // localStorage quota exceeded (image too big): save metadata only
                 console.warn('[APOD] Full cache failed, saving metadata only:', err.message);
                 try {
-                    const cache = {
-                        date: data.date,
-                        title: data.title,
-                        explanation: data.explanation,
-                        copyright: data.copyright || null,
-                        media_type: data.media_type,
-                        imageUrl: imageUrl, // fallback: remote URL
-                        cachedAt: Date.now()
-                    };
-                    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+                    localStorage.setItem(CACHE_KEY, JSON.stringify({ ...base, imageUrl }));
                 } catch (e) {
                     console.error('[APOD] Could not save any cache:', e.message);
                 }
             }
+            renderDebugPanel();
         }
 
         function loadFromCache() {
             try {
+                LEGACY_CACHE_KEYS.forEach(k => localStorage.removeItem(k));
                 const raw = localStorage.getItem(CACHE_KEY);
                 if (!raw) {
                     console.log('[APOD] No cache found.');
@@ -492,8 +531,10 @@
                 }
                 const cache = JSON.parse(raw);
                 const image = cache.imageDataUrl || cache.imageUrl;
-                if (!image) return false;
-
+                if (!image || cache.title === 'NASA Science' || /nasa-logo/i.test(cache.imageUrl || '')) {
+                    localStorage.removeItem(CACHE_KEY);
+                    return false;
+                }
                 console.log('[APOD] Restoring from cache, date:', cache.date);
                 displayAPOD(cache, image);
                 currentDate = cache.date;
@@ -506,6 +547,7 @@
 
         function formatDate(dateStr) {
             const date = new Date(dateStr + 'T00:00:00');
+            if (isNaN(date)) return dateStr || '';
             return date.toLocaleDateString(config.language === 'fr' ? 'fr-FR' : 'en-US', {
                 year: 'numeric',
                 month: 'long',
@@ -527,13 +569,13 @@
         // Wallpaper Engine property listener
         window.wallpaperPropertyListener = {
             applyUserProperties: function(properties) {
-                console.log('[APOD] applyUserProperties called with:', properties);
+                console.log('[APOD] applyUserProperties called with:', Object.keys(properties));
                 let reloadNeeded = false;
 
                 if (properties.apikey) {
                     const newKey = (properties.apikey.value || '').trim();
-                    console.log('[APOD] API key update received. Old:', maskKey(config.apikey), '→ New:', maskKey(newKey));
                     if (newKey !== config.apikey) {
+                        console.log('[APOD] API key changed:', maskKey(config.apikey), '→', maskKey(newKey));
                         config.apikey = newKey;
                         reloadNeeded = true;
                     }
@@ -569,14 +611,13 @@
                 }
                 if (properties.debug !== undefined) {
                     config.debug = properties.debug.value;
-                    updateDebugPanel();
+                    renderDebugPanel();
                 }
 
                 if (reloadNeeded) {
                     reloadCount++;
                     console.log('[APOD] Config changed, re-fetching silently. Total reloads:', reloadCount);
-                    // DO NOT clear the current image. Just re-fetch — if successful, the new
-                    // image will replace the old one. If it fails, the old image stays.
+                    // Keep the current image; a successful fetch replaces it, a failure leaves it.
                     currentDate = null;
                     document.getElementById('error').style.display = 'none';
                     loadAPOD();
@@ -584,18 +625,17 @@
             }
         };
 
-        // Initial load: try cache first (instant display), then fetch fresh APOD
-        console.log('[APOD] Wallpaper initialized. Initial config:', { ...config, apikey: maskKey(config.apikey) });
+        // Initial load: show cache instantly, then fetch.
+        // The first fetch waits briefly so Wallpaper Engine can deliver the user's API key
+        // first (otherwise the very first call would always go out with DEMO_KEY).
+        console.log('[APOD] Wallpaper initialized.');
         applyPanelTransform();
         setupWheelZoom();
-        const hasCachedImage = loadFromCache();
-        if (hasCachedImage) {
-            console.log('[APOD] Cache restored — fetching latest in background.');
-        }
-        loadAPOD();
+        loadFromCache();
+        setTimeout(() => { if (reloadCount === 0) loadAPOD(); }, 1500);
 
         // Check for a new APOD every hour
-        setInterval(loadAPOD, 3600000);
+        setInterval(loadAPOD, REFRESH_INTERVAL_MS);
     </script>
 </body>
 </html>
